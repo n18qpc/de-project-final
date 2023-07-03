@@ -7,6 +7,7 @@ from datetime import datetime
 import pandas as pd
 from vertica_python import connect
 from airflow.hooks.dbapi_hook import DbApiHook
+from ..py.config import get_config
 
 today = datetime.now().strftime("%Y-%m-%d")
 log = logging.getLogger(__name__)
@@ -18,27 +19,33 @@ class VerticaHook(DbApiHook):
 
     def get_conn(self):
         conn = self.get_connection(self.vertica_conn_id)
-        conn_config = {
-            "user": conn.login, 
-            "password": conn.password,
-            "database": conn.schema,
-            "autocommit": True,
-            "host": conn.host
-        }
+        conn_config = get_config(conn)
         if not conn.port:
             conn_config["port"] = 5433
         else:
             conn_config["port"] = int(conn.port)
-        conn = connect(**conn_config)
-        return conn 
+
+        try:
+            conn = connect(**conn_config)
+            return conn
+        except Exception as e:
+            log.error(f"Ошибка подключения к Vertica: {str(e)}")
+            raise
     
 
-psql_connection = BaseHook.get_connection('PG_WAREHOUSE_CONNECTION')
-connect_to_db = psycopg2.connect(
-    f"host='{psql_connection.host}' port='{psql_connection.port}' "
-    f"dbname='{psql_connection.schema}' user='{psql_connection.login}' "
-    f"password='{psql_connection.password}'"
-)
+def get_postgres_connection():
+    psql_connection = BaseHook.get_connection('PG_WAREHOUSE_CONNECTION')
+    try:
+        connect_to_db = psycopg2.connect(
+            f"host='{psql_connection.host}' port='{psql_connection.port}' "
+            f"dbname='{psql_connection.schema}' user='{psql_connection.login}' "
+            f"password='{psql_connection.password}'"
+        )
+        return connect_to_db
+    except Exception as e:
+        log.error(f"Ошибка подключения к PostgreSQL: {str(e)}")
+        raise 
+
 
 
 def check_last_date(table_name: str, column_name: str) -> str:
@@ -69,7 +76,7 @@ def data_receiver(connect_pg: object, schema: str, table_name: str):
 
 
 def load_to_vertica(schema: str, table_name: str, vertica_conn_info: object, columns: tuple) -> None:
-    df = data_receiver(connect_pg=connect_to_db, schema='public', table_name=table_name)
+    df = data_receiver(connect_pg=get_postgres_connection(), schema='public', table_name=table_name)
     vertica_connection = VerticaHook().get_conn()
     log.info(msg=f'Начало загрузки данных в Vertica: {datetime.now().strftime("%Y-%m-%d %H:%M:%s")}')
     with vertica_connection:
